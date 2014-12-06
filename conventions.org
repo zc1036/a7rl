@@ -1,0 +1,135 @@
+
+* A7RL conventions
+
+  Following are the architectural conventions of the A7RL environment.
+
+** Register usage
+
+   The ATMega128 has 32 general-purpose 8-bit registers. They are allocated thus to the following tasks:
+   
+   | Registers       | Usage                         |
+   |-----------------+-------------------------------|
+   | R0, R1          | Heap pointer (HP)             |
+   | R2, R3          | Virtual program counter (VPC) |
+   | R4, R5          | Virtual frame pointer (VFP)   |
+   | R6              | Zero                          |
+   | R8, R9          | Non-pointer return value      |
+   | R10, R11        | Pointer return value          |
+   | R24, R25        | Compiler temporaries          |
+   | R16-23          | Non-pointers                  |
+   | R12-R15, R26-31 | Pointers                      |
+   | SP              | Stack pointer (SP)            |
+   | PC              | Program counter (PC)          |
+   
+   Only registers R16-R31 have the ability to be used with the LDI instruction, so a fourth are given to storing non-pointers, and half to pointers. R24-31 are given to storing pointers because R26-R31 are aliases for parts of the addressing registers X, Y, and Z.
+
+   All registers are callee-preserved.
+
+   Arguments to "native" (non-lisp) functions are passed in R16-23 and R12-R15; if more space is needed, the stack is used. Function return values are communicated similarly.
+
+   Pointers are stored in memory little-endian order (MSB at higher addresses), and the bytes of a pointer stored in registers must be in two adjacent with the LSB in a register having an even-numbered suffix (e.g. a pointer can be in registers R9:R8, and in R11:R10, but not in R10:R9, and not in R11:R8).
+
+** Virtual PC and virtual stack frames
+
+   The terms "virtual PC" and "virtual stack frame" refer to the pointer that points to the lisp object to be evaluated next, and to the structure which records lexical variable bindings and holds a reference to the enclosing lexical scope, respectively. The objects to which the VPC and VFP point are allocated on the heap, not the stack; the real stack is more like a "stack of stacks" holding pointers to the lexical scopes active at that point in time (along with local non-pointer data required by the runtime).
+
+** Memory
+
+*** Garbage Collection
+
+	A7RL uses a two-space garbage collector. (No it doesn't.)
+   
+*** Layout
+
+	SRAM is divided in half into two separate allocation spaces: one half serves as the heap, the other as the stack.
+
+*** The Stack
+
+	The stack grows from high addresses to low. Allocation on the stack is as simple as decrementing the SP register.
+
+	The stack may only store pointers to objects.
+
+**** Real stack frames
+
+	 A real stack frame begins with two 8-bit integers: first the number of bytes in the stack frame used for local assembly data, and second the number of bytes used to store pointers to objects. The purpose of this is to indicate to the garbage collector which areas of the stack it should scan for pointers during a garbage collection phase. However, a GC collection can only be triggered by a GC allocation; therefore, a function which is guaranteed not to allocate memory or call any function that does so does not need this extra information in its stack frame.
+
+	 These two octets do not include space for the return address of a function call. Let SW be the pointer that the GC uses to iterate the stack. The GC can iterate the stack frames by initializing SW with the address of the top of the stack to get the first stack frame. Subtract the two octets stored there from SW and store the result in SW; SW now points to the end of the frame. If SP points past this value, there are more frames; subtract 2 from SW to get the beginning of the next frame (for the return address) and repeat the procedure.
+
+*** The Heap
+
+	Contrary to the stack, the heap grows from low addresses to high. To allocate space on the heap, first the HP 
+
+** Object types and representations
+
+   The supported datatypes are as follows:
+   
+   | Name        | ID | Size (bytes) | Layout                                                                            | Description                                                                                                                  |
+   |-------------+----+--------------+-----------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------|
+   | Fixnum      |  0 | 2            | 1 bit unused; 15 bits integer                                                     | A 15-bit integer                                                                                                             |
+   | Cons        |  1 | 4            | 2 bytes for car, 2 bytes for cdr                                                  | A cons cell whose car and cdr are pointers to objects                                                                        |
+   | Symbol      |  2 | 1 + n        | 1 bytes length, n bytes symbol representation                                     | A symbol                                                                                                                     |
+   | String      |  3 | 2 + n        | 16 bits length, n bytes string contents                                           | An array of characters whose length in bytes is given by the length bits                                                     |
+   | Readtable   |  4 | 142          | two bytes (a pointer) for each character                                          | The readtable for the READ function.                                                                                         |
+   | Array       |  5 | 2 + n        | 2 bytes length, n bytes pointers to objects                                       | A fixed-length array of pointers to objects whose length in bytes is given by the value of the length bits multiplied by two |
+   | Function    |  6 | 5            | 1 byte # of arguments, 1 byte function type, 2 bytes pointer to function list (arg list is first element of list, then comes actual body; OR, if the type is Special Form, this is a pointer to the function in program memory), 2 bytes pointer to lexical closure | A lexical closure |
+   | Data        |  7 | n + 2        | 2 bytes length, n bytes opaque data                                               | A fixed-length opaque data blob                                                                                              |
+
+   Function types:
+   
+   | Type         | Value |
+   |--------------+-------|
+   | Function     |     0 |
+   | Macro        |     1 |
+   | Special form |     2 |
+
+   An object always begins with one byte. The least-significant 3 bits are for the datatype; the next 
+
+   Pointers are 16 bit values; the most significant bit is 0 for SRAM pointers and 1 for program memory pointers, and the other bits are the address of the datum.
+   
+   Nil is represented as a pointer to the address 0 in SRAM.
+
+ Stack frames are represented with 1 + n*4 + 2 bytes; one byte length, n*4 bytes pointer/value pairs, 2 bytes pointer to next frame. They have no header or object ID because they are not first-class objects.
+
+*** Stack frames
+
+	Stack frames are represented as arrays; indexes with even numbers are symbols
+
+*** Readtables
+
+	are represented as an array thus:
+
+    | Index range (decimal) | ASCII range (decimal) | Range length |
+    |-----------------------+-----------------------+--------------|
+    |                     9 |                     0 |            1 |
+    |                    10 |                     1 |            1 |
+    |                    13 |                     1 |            1 |
+    |              [32, 97) |               [2, 67) |           65 |
+    |            [123, 127) |              [67, 71) |            4 |
+	
+
+	The total length of a readtable is 71*2 = 142 bytes. Each entry in the readtable is a word pointer to either a native assembly function or a lisp function, differentiated by whether the most significant bit is 1 or 0 (1 for program memory, 0 for SRAM).
+
+*** Functions
+
+	Function objects are stored as pointers to a captured environment, which may be NIL, and a pointer to a lambda object. A stack frame is a structure with two members: a pointer to the parent stack frame, and an IArray of conses whose cars are the symbol names of each variable and whose cdrs are the values of corresponding symbols.
+
+	A lambda object is a cons whose car points to a lambda list, and whose cdr points to a list of evaluable objects.
+
+** Execution
+
+*** Dynamic variables
+
+	Dynamic variable bindings are stored in a list of conses, the CARs of which store the binding names as symbols and the CDRs of which store the bindings themselves.
+
+*** Calling convention
+
+	When a function is called, a new stack frame of the appropriate length is created, pointers to the next evaluable object and to the stack frame are pushed onto the stack, the stack frame is loaded with the arguments to the function, and the VFP is set to the new frame pointer. Then one of two things happen depending on whether the lambda's cdr is a pointer to data or program memory:
+
+	1. Data memory: The VPC is set to the cdr of the lambda object, and execution flow follows it.
+	2. Program memory: A pointer to the FFI Return Thunk is pushed onto the stack, and the PC is set to the corrected car of the lambda list.
+
+	When a function returns, the stack frame pointer and return address are popped off the stack, the VFP is set to the parent frame pointer of the current virtual stack frame, and the VPC is set to that return address.
+
+*** FFI Return Thunk
+
+   The FFI Return Thunk is a function that is the destination of the RET instruction for FFI calls. Its function is to pop the newest stack frame off the stack and return into the evaluator with the VPC set to the topmost virtual return address.
